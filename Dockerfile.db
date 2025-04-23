@@ -1,4 +1,12 @@
 FROM postgres:15
 
-# Install pg_partman
-RUN apt-get update && apt-get install -y postgresql-15-partman && apt-get clean
+# Install pg_cron
+RUN apt-get update \
+    && apt-get install -y postgresql-15-cron \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY init.sql /docker-entrypoint-initdb.d/
+
+# Enable pg_cron
+RUN echo "shared_preload_libraries = 'pg_cron'" >> /usr/share/postgresql/postgresql.conf.sample
+RUN echo "cron.database_name = '${POSTGRES_DB}'" >> /usr/share/postgresql/postgresql.conf.sample
