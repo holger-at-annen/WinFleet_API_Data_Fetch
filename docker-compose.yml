@@ -8,7 +8,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backups:/backups
-      - ./sql:/docker-entrypoint-initdb.d/sql
+      - ./sql:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
@@ -30,6 +30,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
     deploy:
       resources:
         limits:
