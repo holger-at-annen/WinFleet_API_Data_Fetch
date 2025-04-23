@@ -1,18 +1,18 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Copy requirements first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create logs directory
-RUN mkdir -p /app/logs
+# Create logs directory with proper permissions
+RUN mkdir -p /app/logs && chmod 755 /app/logs
 
-COPY app/main.py .
-COPY app/backup.py .
-COPY app/logging_config.py .
-COPY app/log_cleanup.py .
+# Copy the entire app directory
+COPY ./app /app
 
-# Set proper permissions
-RUN chmod 755 /app/logs
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 CMD ["python", "main.py"]
