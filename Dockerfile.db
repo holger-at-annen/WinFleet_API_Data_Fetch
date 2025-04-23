@@ -6,16 +6,11 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Create config directory
-RUN mkdir -p /etc/postgresql/conf.d
-
-# Copy configuration files
-COPY postgresql.conf /etc/postgresql/conf.d/
-COPY sql/ /docker-entrypoint-initdb.d/sql/
-COPY init-db.sh /docker-entrypoint-initdb.d/
+# Copy initialization files
+COPY sql/ /docker-entrypoint-initdb.d/
+COPY init.sql /docker-entrypoint-initdb.d/
 
 # Set proper permissions
-RUN chmod +x /docker-entrypoint-initdb.d/init-db.sh
+RUN chmod -R 755 /docker-entrypoint-initdb.d/
 
-# Use custom config file
-CMD ["postgres", "-c", "config_file=/etc/postgresql/conf.d/postgresql.conf"]
+CMD ["postgres"]
