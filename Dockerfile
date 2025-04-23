@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+USER root
 RUN mkdir -p /app/
 WORKDIR /app
 COPY requirements.txt .
