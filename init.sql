@@ -1,3 +1,6 @@
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
 -- Create parent table for partitioning
 CREATE TABLE IF NOT EXISTS posts (
     id SERIAL,
@@ -13,34 +16,52 @@ CREATE TABLE IF NOT EXISTS posts (
     PRIMARY KEY (asset_id, event_time)
 ) PARTITION BY RANGE (event_time);
 
--- Function to create partitions
-CREATE OR REPLACE FUNCTION create_partition_if_not_exists()
+-- Function to manage partitions
+CREATE OR REPLACE FUNCTION manage_posts_partitions()
 RETURNS void AS $$
 DECLARE
-    current_year INTEGER;
-    current_month INTEGER;
+    current_date_val DATE;
+    next_month_date DATE;
     partition_name TEXT;
-    start_date DATE;
-    end_date DATE;
 BEGIN
-    current_year := EXTRACT(YEAR FROM CURRENT_DATE);
-    current_month := EXTRACT(MONTH FROM CURRENT_DATE);
-    partition_name := format('posts_%s_%s', current_year, LPAD(current_month::text, 2, '0'));
-    start_date := date_trunc('month', CURRENT_DATE);
-    end_date := date_trunc('month', CURRENT_DATE + interval '1 month');
+    -- Create partition for current month if it doesn't exist
+    current_date_val := date_trunc('month', CURRENT_DATE);
+    partition_name := 'posts_' || to_char(current_date_val, 'YYYY_MM');
     
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = partition_name) THEN
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF posts FOR VALUES FROM (%L) TO (%L)',
-            partition_name, start_date, end_date
+            'CREATE TABLE IF NOT EXISTS %I PARTITION OF posts 
+             FOR VALUES FROM (%L) TO (%L)',
+            partition_name,
+            current_date_val,
+            current_date_val + interval '1 month'
         );
+        RAISE NOTICE 'Created partition: %', partition_name;
+    END IF;
+
+    -- Create partition for next month if it doesn't exist
+    next_month_date := current_date_val + interval '1 month';
+    partition_name := 'posts_' || to_char(next_month_date, 'YYYY_MM');
+    
+    IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = partition_name) THEN
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS %I PARTITION OF posts 
+             FOR VALUES FROM (%L) TO (%L)',
+            partition_name,
+            next_month_date,
+            next_month_date + interval '1 month'
+        );
+        RAISE NOTICE 'Created partition: %', partition_name;
     END IF;
 END;
 $$ LANGUAGE plpgsql;
 
--- Create initial partition
-SELECT create_partition_if_not_exists();
+-- Create initial partitions
+SELECT manage_posts_partitions();
 
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_posts_event_time ON posts (event_time);
 CREATE INDEX IF NOT EXISTS idx_posts_asset_id ON posts (asset_id);
+
+-- Schedule partition management (runs daily at midnight)
+SELECT cron.schedule('manage_posts_partitions', '0 0 * * *', 'SELECT manage_posts_partitions()');
