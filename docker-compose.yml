@@ -8,7 +8,6 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backups:/backups
-      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
       - ./sql:/docker-entrypoint-initdb.d/sql
     ports:
       - "5432:5432"
