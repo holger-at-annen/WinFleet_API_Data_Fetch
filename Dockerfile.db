@@ -5,9 +5,11 @@ RUN apt-get update \
     && apt-get install -y postgresql-15-cron \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and set up initialization script
-COPY init-db.sql /docker-entrypoint-initdb.d/
-RUN chmod 644 /docker-entrypoint-initdb.d/init-db.sql
+# Copy initialization script
+COPY init.sql /docker-entrypoint-initdb.d/
+
+# Set proper permissions
+RUN chmod 644 /docker-entrypoint-initdb.d/init.sql
 
 # Configure PostgreSQL
 RUN echo "shared_preload_libraries = 'pg_cron'" >> /usr/share/postgresql/postgresql.conf.sample && \
