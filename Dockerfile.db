@@ -1,5 +1,14 @@
 FROM postgres:15
 
-# Copy initialization script into the container
-COPY init.sql /docker-entrypoint-initdb.d/
-RUN chmod 644 /docker-entrypoint-initdb.d/init.sql
+# Install pg_cron
+RUN apt-get update \
+    && apt-get install -y postgresql-15-cron \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and set up initialization script
+COPY init-db.sql /docker-entrypoint-initdb.d/
+RUN chmod 644 /docker-entrypoint-initdb.d/init-db.sql
+
+# Configure PostgreSQL
+RUN echo "shared_preload_libraries = 'pg_cron'" >> /usr/share/postgresql/postgresql.conf.sample && \
+    echo "cron.database_name = '${POSTGRES_DB}'" >> /usr/share/postgresql/postgresql.conf.sample
