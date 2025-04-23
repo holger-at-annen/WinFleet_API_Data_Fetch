@@ -7,8 +7,7 @@ services:
       - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backups:/backups
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - backup_data:/backups
     ports:
       - "5432:5432"
     command: >
@@ -63,6 +62,7 @@ services:
 
 volumes:
   postgres_data:
+  backup_data
 
 networks:
   app_network:
