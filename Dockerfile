@@ -1,21 +1,19 @@
 FROM python:3.11-slim
-
+USER root
+RUN mkdir -p /app/
 WORKDIR /app
-
-# Show current directory contents for debugging
-RUN pwd && ls -la
-
-# Copy requirements first
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create logs directory
-RUN mkdir -p /app/logs && chmod 755 /app/logs
+RUN mkdir -p /app/logs
 
-# Copy Python files from local app directory
-COPY app/*.py ./
+COPY app/main.py .
+COPY app/backup.py .
+COPY app/logging_config.py .
+COPY app/log_cleanup.py .
 
-# Show copied files for debugging
-RUN pwd && ls -la
+# Set proper permissions
+RUN chmod 755 /app/logs
 
 CMD ["python", "main.py"]
