@@ -6,11 +6,13 @@ RUN apt-get update && apt-get install -y \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
+# Create initialization directory
+RUN mkdir -p /docker-entrypoint-initdb.d/sql
+
 # Copy initialization files
-COPY sql/ /docker-entrypoint-initdb.d/
-COPY init.sql /docker-entrypoint-initdb.d/
+COPY sql/ /docker-entrypoint-initdb.d/sql/
 
 # Set proper permissions
-RUN chmod -R 755 /docker-entrypoint-initdb.d/
+RUN chmod -R 755 /docker-entrypoint-initdb.d
 
 CMD ["postgres"]
