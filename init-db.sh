@@ -1,54 +1,69 @@
 #!/bin/bash
+set -e
 
-# Ensure POSTGRES_USER and POSTGRES_DB are set
-if [ -z "$POSTGRES_USER" ]; then
-  echo "Error: POSTGRES_USER environment variable is not set"
-  exit 1
-fi
+# Ensure required environment variables are set
+for var in POSTGRES_USER POSTGRES_DB; do
+    if [ -z "${!var}" ]; then
+        echo "Error: $var environment variable is not set"
+        exit 1
+    fi
+done
 
-if [ -z "$POSTGRES_DB" ]; then
-  echo "Error: POSTGRES_DB environment variable is not set"
-  exit 1
-fi
+# Wait for database to be ready
+until pg_isready -U "$POSTGRES_USER" -d "postgres"; do
+    echo "Waiting for database to be ready..."
+    sleep 2
+done
 
-# Generate init-db.sql with POSTGRES_USER substituted
-cat << EOF > /tmp/init-db.sql
--- Create parent table for partitioning
-CREATE TABLE IF NOT EXISTS posts (
-    id SERIAL,
-    asset_id INTEGER NOT NULL,
-    name TEXT,
-    plate_number TEXT,
-    vin TEXT,
-    position_description TEXT,
-    event_time TIMESTAMP NOT NULL,
-    latitude DECIMAL(10,8),
-    longitude DECIMAL(11,8),
-    status_text TEXT,
-    PRIMARY KEY (asset_id, event_time)
-) PARTITION BY RANGE (event_time);
+# Initialize pg_cron in postgres database
+echo "Setting up extensions in postgres database..."
+psql -U "$POSTGRES_USER" -d postgres <<-EOSQL
+    -- Create extensions
+    CREATE EXTENSION IF NOT EXISTS pg_cron;
+    CREATE EXTENSION IF NOT EXISTS dblink;
+    
+    -- Create schema and grant permissions
+    CREATE SCHEMA IF NOT EXISTS cron;
+    GRANT USAGE ON SCHEMA cron TO "$POSTGRES_USER";
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cron TO "$POSTGRES_USER";
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA cron TO "$POSTGRES_USER";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA cron GRANT ALL ON TABLES TO "$POSTGRES_USER";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA cron GRANT ALL ON SEQUENCES TO "$POSTGRES_USER";
+EOSQL
 
--- Create initial partitions based on current date
-DO \$\$
-DECLARE
-    current_year INTEGER := EXTRACT(YEAR FROM CURRENT_DATE);
-    current_month INTEGER := EXTRACT(MONTH FROM CURRENT_DATE);
-BEGIN
-    -- Create single partition for current month
-    EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS posts_%s_%s PARTITION OF posts 
-         FOR VALUES FROM (%L) TO (%L)',
-        current_year,
-        to_char(CURRENT_DATE, 'MM'),
-        date_trunc('month', CURRENT_DATE),
-        date_trunc('month', CURRENT_DATE + interval '1 month')
+# Create application database if it doesn't exist
+echo "Creating application database if it doesn't exist..."
+psql -U "$POSTGRES_USER" -d postgres <<-EOSQL
+    DO \$\$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_database WHERE datname = '$POSTGRES_DB') THEN
+            CREATE DATABASE $POSTGRES_DB;
+        END IF;
+    END
+    \$\$;
+EOSQL
+
+# Initialize dblink in application database
+echo "Setting up dblink in application database..."
+psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<-EOSQL
+    CREATE EXTENSION IF NOT EXISTS dblink;
+EOSQL
+
+# Initialize schema
+echo "Initializing database schema..."
+psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /docker-entrypoint-initdb.d/sql/01-init-tables.sql
+
+# Setup cron job in postgres database
+echo "Setting up cron job..."
+psql -U "$POSTGRES_USER" -d postgres <<-EOSQL
+    SELECT cron.schedule(
+        job_name := 'manage_partitions_job',
+        schedule := '0 0 * * *',
+        command := format(
+            'SELECT manage_partitions() FROM dblink(''dbname=%s'', ''SELECT manage_partitions()'') AS t(result void)',
+            '$POSTGRES_DB'
+        )
     );
-END \$\$;
+EOSQL
 
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_posts_event_time ON posts (event_time);
-CREATE INDEX IF NOT EXISTS idx_posts_asset_id ON posts (asset_id);
-EOF
-
-# Execute the SQL using the existing connection pool
-psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/init-db.sql
+echo "Database initialization completed successfully"
