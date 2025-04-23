@@ -1,0 +1,4 @@
+FROM postgres:15
+
+# Install pg_partman
+RUN apt-get update && apt-get install -y postgresql-15-partman && apt-get clean
