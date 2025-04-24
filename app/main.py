@@ -65,23 +65,36 @@ def create_session():
 
 def init_db():
     global db_pool
-    try:
-        if not all([POSTGRES_HOST, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB]):
-            raise ValueError("Missing required database environment variables")
-            
-        logger.info(f"Initializing database connection pool: host={POSTGRES_HOST}, user={POSTGRES_USER}, database={POSTGRES_DB}")
-        db_pool = SimpleConnectionPool(
-            minconn=1,
-            maxconn=10,
-            host=POSTGRES_HOST,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-            database=POSTGRES_DB
-        )
-        logger.info("Database connection pool initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize database connection pool: {e}")
-        raise
+    max_attempts = 30
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            if not all([POSTGRES_HOST, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB]):
+                raise ValueError("Missing required database environment variables")
+                
+            logger.info(f"Initializing database connection pool: host={POSTGRES_HOST}, user={POSTGRES_USER}, database={POSTGRES_DB}")
+            db_pool = SimpleConnectionPool(
+                minconn=1,
+                maxconn=10,
+                host=POSTGRES_HOST,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD,
+                database=POSTGRES_DB
+            )
+            logger.info("Database connection pool initialized successfully")
+            return
+        except psycopg2.OperationalError as e:
+            attempt += 1
+            if attempt < max_attempts:
+                wait_time = min(2 ** attempt, 30)  # Cap wait time at 30 seconds
+                logger.warning(f"Database connection attempt {attempt}/{max_attempts} failed. Waiting {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to initialize database connection pool after {max_attempts} attempts: {e}")
+                raise
+        except Exception as e:
+            logger.error(f"Failed to initialize database connection pool: {e}")
+            raise
 
 def check_rate_limits(response):
     global rate_limit_wait, request_count, window_start
