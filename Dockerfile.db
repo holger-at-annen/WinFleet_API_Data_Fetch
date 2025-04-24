@@ -1,18 +1,27 @@
 FROM postgres:15
 
-# Install required packages
+# Install Python and required packages
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-psycopg2 \
     postgresql-15-cron \
-    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Create initialization directory
-RUN mkdir -p /docker-entrypoint-initdb.d/sql
+# Copy initialization scripts
+COPY app/init_db.py /docker-entrypoint-initdb.d/
+COPY app/01-init-db.sh /docker-entrypoint-initdb.d/
 
-# Copy initialization files
-COPY sql/ /docker-entrypoint-initdb.d/sql/
+# Copy and set up PostgreSQL configuration
+COPY postgresql.conf /etc/postgresql/postgresql.conf
+RUN chown postgres:postgres /etc/postgresql/postgresql.conf && \
+    chmod 600 /etc/postgresql/postgresql.conf
 
-# Set proper permissions
+# Grant permissions for initialization scripts
 RUN chmod -R 755 /docker-entrypoint-initdb.d
 
-CMD ["postgres"]
+# Set work directory
+WORKDIR /docker-entrypoint-initdb.d
+
+# Start PostgreSQL with custom config
+CMD ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
