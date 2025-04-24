@@ -4,15 +4,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create logs directory
-RUN mkdir -p /app/logs
+# Create logs directory with proper ownership and permissions
+RUN mkdir -p /app/logs && \
+    chown -R 1000:1000 /app/logs && \
+    chmod 755 /app/logs
 
 COPY app/main.py .
 COPY app/backup.py .
 COPY app/logging_config.py .
 COPY app/log_cleanup.py .
 
-# Set proper permissions
-RUN chmod 755 /app/logs
+# Set non-root user with UID 1000
+USER 1000:1000
 
 CMD ["python", "main.py"]
