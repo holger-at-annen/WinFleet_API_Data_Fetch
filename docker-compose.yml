@@ -8,7 +8,13 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backups:/backups
-      - ./sql:/docker-entrypoint-initdb.d:ro
+      - type: bind
+        source: ./sql
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        volume:
+          nocopy: true
+    user: postgres
     ports:
       - "5432:5432"
     networks:
