@@ -25,13 +25,15 @@ def wait_for_db(dsn, max_attempts=60, wait_seconds=2):
 
 def init_database():
     """Initialize the database with required extensions and schema"""
-    # Get database configuration from environment
     db_config = {
         'host': '/var/run/postgresql',  # Use Unix socket
         'user': os.getenv('POSTGRES_USER', 'dbuser'),
         'password': os.getenv('POSTGRES_PASSWORD', 'password'),
-        'database': 'postgres'  # Connect to default database first
+        'database': os.getenv('POSTGRES_DB', 'apidata')
     }
+
+    readonly_user = os.getenv('POSTGRES_READONLY_USER', 'readonlyuser')
+    readonly_password = os.getenv('POSTGRES_READONLY_PASSWORD', 'readonlypassword')
 
     app_db = os.getenv('POSTGRES_DB', 'apidata')
     
@@ -279,6 +281,35 @@ def init_database():
             END;
             $$ LANGUAGE plpgsql;
         """)
+
+        # Create read-only user and set permissions
+        logger.info(f"Creating read-only user {readonly_user}...")
+        cur.execute(f"""
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT FROM pg_user WHERE usename = '{readonly_user}') THEN
+                    CREATE USER {readonly_user} WITH PASSWORD '{readonly_password}';
+                END IF;
+            END $$;
+        """)
+
+        # Revoke all existing permissions
+        cur.execute(f"""
+            REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {readonly_user};
+            REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {readonly_user};
+            REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM {readonly_user};
+        """)
+
+        # Grant only SELECT permission on posts table
+        cur.execute(f"""
+            GRANT CONNECT ON DATABASE {db_config['database']} TO {readonly_user};
+            GRANT USAGE ON SCHEMA public TO {readonly_user};
+            GRANT SELECT ON posts TO {readonly_user};
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public 
+                GRANT SELECT ON TABLES TO {readonly_user};
+        """)
+
+        logger.info(f"Read-only user {readonly_user} created successfully")
 
         # Schedule jobs
         logger.info("Scheduling jobs...")
