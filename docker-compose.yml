@@ -12,9 +12,9 @@ services:
         source: ./sql
         target: /docker-entrypoint-initdb.d
         read_only: true
-        volume:
-          nocopy: true
-    user: "999:999"
+        bind:
+          create_host_path: true
+    user: postgres
     ports:
       - "5432:5432"
     networks:
