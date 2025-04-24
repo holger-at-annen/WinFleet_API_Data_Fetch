@@ -14,7 +14,7 @@ services:
         read_only: true
         volume:
           nocopy: true
-    user: postgres
+    user: "999:999"
     ports:
       - "5432:5432"
     networks:
