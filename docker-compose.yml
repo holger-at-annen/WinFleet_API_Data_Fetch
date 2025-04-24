@@ -31,7 +31,7 @@ services:
     ports:
       - "${API_PORT}:8000"
     volumes:
-      - ./app/logs:/app/logs
+      - ./logs:/app/logs
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
