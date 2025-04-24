@@ -3,50 +3,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.db
-    env_file:
-      - .env
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./backups:/backups
-      - type: bind
-        source: ./sql
-        target: /docker-entrypoint-initdb.d
-        read_only: true
-        bind:
-          create_host_path: true
-    user: postgres
-    ports:
-      - "5432:5432"
-    networks:
-      - app_network
-    command: >
-      postgres
-      -c shared_preload_libraries=pg_cron
-      -c cron.database_name=postgres
-      -c cron.use_background_workers=on
-      -c work_mem=8MB
-      -c maintenance_work_mem=128MB
-      -c effective_cache_size=1GB
-      -c shared_buffers=512MB
-      -c wal_buffers=16MB
-      -c autovacuum=on
-      -c autovacuum_vacuum_scale_factor=0.1
-      -c autovacuum_analyze_scale_factor=0.05
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_INITDB_ARGS: "--data-checksums"
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./app:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - app_network
+    restart: unless-stopped
 
   app:
     build: .
@@ -55,6 +26,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     networks:
       - app_network
     ports:
@@ -78,3 +50,5 @@ networks:
 
 volumes:
   pgdata:
+    name: ${POSTGRES_DB}_pgdata
+    driver: local
