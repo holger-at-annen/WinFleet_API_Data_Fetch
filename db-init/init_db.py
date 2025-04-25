@@ -66,6 +66,95 @@ def init_database():
         conn.autocommit = True
         cur = conn.cursor()
 
+        # Get SSL configuration from environment
+        require_ssl = os.getenv('POSTGRES_REQUIRE_SSL', 'false').lower() == 'true'
+        ssl_cert = os.getenv('POSTGRES_SSL_CERT_PATH', '/etc/certs/postgresql.crt')
+        ssl_key = os.getenv('POSTGRES_SSL_KEY_PATH', '/etc/certs/postgresql.key')
+
+        logger.info("Configuring PostgreSQL settings...")
+        
+        # Execute ALTER SYSTEM commands individually
+        system_settings = [
+            # Basic Settings
+            "SET listen_addresses = '*'",
+            "SET dynamic_shared_memory_type = 'posix'",
+            "SET work_mem = '4MB'",
+            "SET maintenance_work_mem = '64MB'",
+            "SET effective_cache_size = '1GB'",
+            "SET wal_buffers = '16MB'",
+            
+            # Query Planner
+            "SET random_page_cost = '1.1'",
+            "SET effective_io_concurrency = '200'",
+            
+            # Autovacuum
+            "SET autovacuum = 'on'",
+            "SET autovacuum_vacuum_scale_factor = '0.1'",
+            "SET autovacuum_analyze_scale_factor = '0.05'",
+            
+            # Write Ahead Log
+            "SET wal_level = 'replica'",
+            "SET max_wal_size = '1GB'",
+            "SET min_wal_size = '80MB'",
+            
+            # Background Writer
+            "SET bgwriter_delay = '200ms'",
+            "SET bgwriter_lru_maxpages = '100'",
+            "SET bgwriter_lru_multiplier = '2.0'",
+            
+            # Extensions
+            "SET shared_preload_libraries = 'pg_cron'",
+            
+            # Logging
+            "SET log_destination = 'stderr'",
+            "SET logging_collector = 'on'",
+            "SET log_directory = 'log'",
+            "SET log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'",
+            "SET log_min_duration_statement = '1000'",
+            "SET log_checkpoints = 'on'",
+            "SET log_connections = 'on'",
+            "SET log_disconnections = 'on'",
+            "SET log_lock_waits = 'on'",
+            "SET log_temp_files = '0'",
+            "SET log_timezone = 'UTC'",
+            "SET log_statement = 'none'",
+            "SET log_min_messages = 'warning'",
+            
+            # Client Connection Defaults
+            "SET datestyle = 'iso, mdy'",
+            "SET timezone = 'UTC'"
+        ]
+
+        for setting in system_settings:
+            try:
+                cur.execute(f"ALTER SYSTEM {setting}")
+            except Exception as e:
+                logger.warning(f"Failed to set {setting}: {e}")
+
+        # Configure SSL separately
+        if require_ssl and os.path.exists(ssl_cert) and os.path.exists(ssl_key):
+            logger.info(f"Enabling SSL with cert: {ssl_cert} and key: {ssl_key}")
+            ssl_settings = [
+                "SET ssl = 'on'",
+                f"SET ssl_cert_file = '{ssl_cert}'",
+                f"SET ssl_key_file = '{ssl_key}'"
+            ]
+            for setting in ssl_settings:
+                cur.execute(f"ALTER SYSTEM {setting}")
+        else:
+            logger.info("SSL disabled or certificates not found")
+            ssl_settings = [
+                "SET ssl = 'off'",
+                "SET ssl_cert_file = ''",
+                "SET ssl_key_file = ''"
+            ]
+            for setting in ssl_settings:
+                cur.execute(f"ALTER SYSTEM {setting}")
+
+        # Reload configuration
+        cur.execute("SELECT pg_reload_conf();")
+        logger.info("PostgreSQL configuration updated successfully")
+
         # Setup extensions
         logger.info("Setting up extensions...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS pg_cron CASCADE;")
