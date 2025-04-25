@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create logs directory and set proper permissions recursively
+# Create logs directory with proper ownership and permissions
 RUN mkdir -p logs && \
     chown -R 1000:1000 . && \
     chmod -R u+rwX .
