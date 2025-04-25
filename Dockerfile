@@ -5,15 +5,19 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create logs directory with proper ownership and permissions
-RUN mkdir -p logs && \
-    chown -R 1000:1000 . && \
-    chmod -R u+rwX .
+RUN mkdir -p /app/logs && \
+    chown -R 1000:1000 /app && \
+    chmod -R 755 /app
 
 COPY app/main.py .
 COPY app/backup.py .
 COPY app/logging_config.py .
 COPY app/log_cleanup.py .
 COPY app/partition_handler.py .
+
+# Ensure permissions are set after copying files
+RUN chown -R 1000:1000 /app && \
+    chmod -R u+rwX /app
 
 # Set non-root user with UID 1000
 USER 1000:1000
