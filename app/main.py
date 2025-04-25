@@ -18,6 +18,7 @@ import asyncio
 from backup import manage_daily_backups, manage_monthly_backups, manage_annual_backups
 from logging_config import setup_logging
 from log_cleanup import cleanup_old_logs
+from partition_handler import handle_missing_partition_error
 
 # Configure logging
 logger = setup_logging()
@@ -263,6 +264,11 @@ def store_vehicle_status_data(prepared_data):
         logger.info(f"Inserted/Updated {len(values)} vehicle status records")
         return True
     except psycopg2.Error as e:
+        if "no partition of relation" in str(e):
+            if handle_missing_partition_error(conn, str(e)):
+                # Retry the insert after creating the partition
+                store_vehicle_status_data(prepared_data)
+                return True
         logger.error(f"Database error while storing data: {e}")
         conn.rollback()
         return False
@@ -272,6 +278,29 @@ def store_vehicle_status_data(prepared_data):
         return False
     finally:
         db_pool.putconn(conn)
+
+def store_data(data):
+    conn = None
+    cur = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # ...existing insert code...
+        
+    except psycopg2.Error as e:
+        if "no partition of relation" in str(e):
+            if handle_missing_partition_error(conn, str(e)):
+                # Retry the insert after creating the partition
+                store_data(data)
+                return
+        logging.error(f"Database error while storing data: {str(e)}")
+        raise
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 def fetch_and_store(session):
     global last_job_success, last_job_time, rate_limit_wait
