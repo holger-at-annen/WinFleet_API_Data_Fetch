@@ -4,10 +4,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create logs directory with proper ownership and permissions
+# Create directories and set permissions
 RUN mkdir -p /app/logs && \
-    chown -R 1000:1000 /app/logs && \
-    chmod 755 /app/logs
+    chown -R 1000:1000 /app && \
+    chmod -R 755 /app
 
 COPY app/main.py .
 COPY app/backup.py .
