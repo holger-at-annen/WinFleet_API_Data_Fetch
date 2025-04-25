@@ -1,26 +1,25 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create logs directory and set permissions
+RUN mkdir -p logs && \
+    chmod 777 logs
+
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create logs directory and set proper permissions
-RUN mkdir -p logs && \
-    chown -R 1000:1000 . && \
-    chmod -R 777 logs && \
-    chmod -R u+rwX .
+# Copy application code
+COPY app/ .
 
-COPY app/main.py .
-COPY app/backup.py .
-COPY app/logging_config.py .
-COPY app/log_cleanup.py .
-COPY app/partition_handler.py .
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
 
-# Ensure permissions after copying files
-RUN chown -R 1000:1000 . && \
-    chmod -R u+rwX .
-
-# Set non-root user with UID 1000
-USER 1000:1000
-
+# Run the application
 CMD ["python", "main.py"]
