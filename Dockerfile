@@ -5,9 +5,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directories and set permissions
-RUN mkdir -p /logs && \
-    chown -R 1000:1000 /logs && \
-    chmod -R 755 /logs
+RUN mkdir -p logs && \
+    chown -R 1000:1000 . && \
+    chmod -R 755 .
 
 COPY app/main.py .
 COPY app/backup.py .
