@@ -225,53 +225,53 @@ def store_vehicle_status_data(prepared_data):
 
     conn = db_pool.getconn()
     try:
-        cursor = conn.cursor()
-        values = [
-            (
-                item['asset_id'],
-                item['name'],
-                item['plate_number'],
-                item['vin'],
-                item['position_description'],
-                item['event_time'],
-                item['latitude'],
-                item['longitude'],
-                item['status_text']
-            )
-            for item in prepared_data
-        ]
-        execute_values(
-            cursor,
-            """
-            INSERT INTO posts (
-                asset_id, name, plate_number, vin, position_description,
-                event_time, latitude, longitude, status_text
-            )
-            VALUES %s
-            ON CONFLICT ON CONSTRAINT posts_pkey DO UPDATE
-            SET
-                name = EXCLUDED.name,
-                plate_number = EXCLUDED.plate_number,
-                vin = EXCLUDED.vin,
-                position_description = EXCLUDED.position_description,
-                latitude = EXCLUDED.latitude,
-                longitude = EXCLUDED.longitude,
-                status_text = EXCLUDED.status_text
-            """,
-            values
-        )
-        conn.commit()
-        logger.info(f"Inserted/Updated {len(values)} vehicle status records")
-        return True
-    except psycopg2.Error as e:
-        if "no partition of relation" in str(e):
-            if handle_missing_partition_error(conn, str(e)):
-                # Retry the insert after creating the partition
-                store_vehicle_status_data(prepared_data)
+        with conn.cursor() as cursor:
+            values = [
+                (
+                    item['asset_id'],
+                    item['name'],
+                    item['plate_number'],
+                    item['vin'],
+                    item['position_description'],
+                    item['event_time'],
+                    item['latitude'],
+                    item['longitude'],
+                    item['status_text']
+                )
+                for item in prepared_data
+            ]
+            try:
+                execute_values(
+                    cursor,
+                    """
+                    INSERT INTO posts (
+                        asset_id, name, plate_number, vin, position_description,
+                        event_time, latitude, longitude, status_text
+                    )
+                    VALUES %s
+                    ON CONFLICT ON CONSTRAINT posts_pkey DO UPDATE
+                    SET
+                        name = EXCLUDED.name,
+                        plate_number = EXCLUDED.plate_number,
+                        vin = EXCLUDED.vin,
+                        position_description = EXCLUDED.position_description,
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude,
+                        status_text = EXCLUDED.status_text
+                    """,
+                    values
+                )
+                conn.commit()
+                logger.info(f"Inserted/Updated {len(values)} vehicle status records")
                 return True
-        logger.error(f"Database error while storing data: {e}")
-        conn.rollback()
-        return False
+            except psycopg2.Error as e:
+                conn.rollback()  # Ensure clean state before handling partition
+                if "no partition of relation" in str(e):
+                    if handle_missing_partition_error(conn, str(e)):
+                        # Retry the insert after creating the partition
+                        return store_vehicle_status_data(prepared_data)
+                logger.error(f"Database error while storing data: {e}")
+                return False
     except Exception as e:
         logger.error(f"Unexpected error while storing data: {e}")
         conn.rollback()
