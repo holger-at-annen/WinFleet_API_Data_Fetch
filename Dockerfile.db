@@ -1,27 +1,25 @@
-FROM postgres:15
+FROM python:3.11-slim
 
-# Install Python and required packages
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-psycopg2 \
-    postgresql-15-cron \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy initialization scripts
-COPY db-init/init_db.py /docker-entrypoint-initdb.d/
-COPY db-init/01-init-db.sh /docker-entrypoint-initdb.d/
+# Create logs directory with proper ownership and permissions
+RUN mkdir -p /app/logs && \
+    chown -R 1000:1000 /app && \
+    chmod -R 777 /app/logs
 
-# Copy and set up PostgreSQL configuration
-COPY postgresql.conf /etc/postgresql/postgresql.conf
-RUN chown postgres:postgres /etc/postgresql/postgresql.conf && \
-    chmod 600 /etc/postgresql/postgresql.conf
+COPY app/main.py .
+COPY app/backup.py .
+COPY app/logging_config.py .
+COPY app/log_cleanup.py .
+COPY app/partition_handler.py .
 
-# Grant permissions for initialization scripts
-RUN chmod -R 755 /docker-entrypoint-initdb.d
+# Ensure permissions persist after copying files
+RUN chown -R 1000:1000 /app && \
+    chmod -R 777 /app/logs
 
-# Set work directory
-WORKDIR /docker-entrypoint-initdb.d
+# Set non-root user with UID 1000
+USER 1000:1000
 
-# Start PostgreSQL with custom config
-CMD ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+CMD ["python", "main.py"]
