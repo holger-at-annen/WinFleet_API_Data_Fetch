@@ -7,18 +7,26 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_REQUIRE_SSL: ${POSTGRES_REQUIRE_SSL:-false}
+      POSTGRES_SSL_CERT_PATH: ${POSTGRES_SSL_CERT_PATH:-/etc/certs/postgresql.crt}
+      POSTGRES_SSL_KEY_PATH: ${POSTGRES_SSL_KEY_PATH:-/etc/certs/postgresql.key}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ${SSL_CERT_VOLUME:-./certs}:/etc/certs:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
     networks:
       - app_network
     ports:
       - "${POSTGRES_PORT}:5432"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.tcp.routers.postgres.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.postgres.entrypoints=postgresql"
+      - "traefik.tcp.services.postgres.loadbalancer.server.port=5432"
     restart: unless-stopped
 
   app:
@@ -45,6 +53,26 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  backup:
+    image: prodrigestivill/postgres-backup-local
+    restart: unless-stopped
+    volumes:
+      - ./backups:/app/backups
+    networks:
+      - app_network
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SCHEDULE: '@daily'
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 12
+      BACKUP_KEEP_YEARS: 5
+    depends_on:
+      - db
 
 networks:
   app_network:
