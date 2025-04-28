@@ -36,6 +36,8 @@ def init_database():
     readonly_password = os.getenv('POSTGRES_READONLY_PASSWORD', 'readonlypassword')
 
     app_db = os.getenv('POSTGRES_DB', 'apidata')
+
+    timezone = os.getenv('POSTGRES_TY', 'Europe/Berlin')
     
     # First wait for PostgreSQL to be ready
     dsn = f"dbname=postgres user={db_config['user']} password={db_config['password']} host={db_config['host']}"
@@ -116,13 +118,13 @@ def init_database():
             "SET log_disconnections = 'on'",
             "SET log_lock_waits = 'on'",
             "SET log_temp_files = '0'",
-            "SET log_timezone = 'UTC'",
+            "SET log_timezone = timezone,
             "SET log_statement = 'none'",
             "SET log_min_messages = 'warning'",
             
             # Client Connection Defaults
             "SET datestyle = 'iso, mdy'",
-            "SET timezone = 'UTC'"
+            "SET timezone = timezone"
         ]
 
         for setting in system_settings:
