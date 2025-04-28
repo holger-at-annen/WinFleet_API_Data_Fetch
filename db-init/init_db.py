@@ -118,7 +118,7 @@ def init_database():
             "SET log_disconnections = 'on'",
             "SET log_lock_waits = 'on'",
             "SET log_temp_files = '0'",
-            "SET log_timezone = timezone,
+            "SET log_timezone = {timezone},
             "SET log_statement = 'none'",
             "SET log_min_messages = 'warning'",
             
