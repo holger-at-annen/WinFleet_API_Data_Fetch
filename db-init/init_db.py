@@ -118,13 +118,13 @@ def init_database():
             "SET log_disconnections = 'on'",
             "SET log_lock_waits = 'on'",
             "SET log_temp_files = '0'",
-            f"SET log_timezone = {timezone},
+            f"SET log_timezone = '{timezone}'",
             "SET log_statement = 'none'",
             "SET log_min_messages = 'warning'",
             
             # Client Connection Defaults
             "SET datestyle = 'iso, mdy'",
-            f"SET timezone = {timezone}"
+            f"SET timezone = '{timezone}'"
         ]
 
         for setting in system_settings:
