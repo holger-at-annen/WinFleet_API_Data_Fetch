@@ -124,7 +124,7 @@ def init_database():
             
             # Client Connection Defaults
             "SET datestyle = 'iso, mdy'",
-            "SET timezone = timezone"
+            "SET timezone = {timezone}"
         ]
 
         for setting in system_settings:
