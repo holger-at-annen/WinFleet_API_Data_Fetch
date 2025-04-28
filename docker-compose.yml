@@ -10,6 +10,7 @@ services:
       POSTGRES_REQUIRE_SSL: ${POSTGRES_REQUIRE_SSL:-false}
       POSTGRES_SSL_CERT_PATH: ${POSTGRES_SSL_CERT_PATH:-/etc/certs/postgresql.crt}
       POSTGRES_SSL_KEY_PATH: ${POSTGRES_SSL_KEY_PATH:-/etc/certs/postgresql.key}
+      TZ: ${POSTGRES_TZ:-Europe/Berlin}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./certs:/etc/certs:ro
