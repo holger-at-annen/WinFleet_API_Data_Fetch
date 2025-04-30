@@ -6,6 +6,7 @@ import time
 import os
 import logging
 from datetime import datetime
+import pytz
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -24,19 +25,19 @@ logger = setup_logging()
 
 # Environment variables
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'db')
-POSTGRES_USER = os.getenv('POSTGRES_USER')  # Remove default value
-POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')  # Remove default value
-POSTGRES_DB = os.getenv('POSTGRES_DB')  # Remove default value
+POSTGRES_USER = os.getenv('POSTGRES_USER')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
+POSTGRES_DB = os.getenv('POSTGRES_DB')
 API_BASE_URL = os.getenv('API_BASE_URL', 'https://api.winfleet.lu')
 API_USERNAME = os.getenv('API_USERNAME', 'your_username')
 API_PASSWORD = os.getenv('API_PASSWORD', 'your_password')
-FETCH_INTERVAL = int(os.getenv('FETCH_INTERVAL', 60))  # Default to 60 seconds
+FETCH_INTERVAL = int(os.getenv('FETCH_INTERVAL', 60))
 API_PORT = int(os.getenv('API_PORT', 8000))
 
 # Rate limit configuration
-MAX_REQUESTS_PER_MINUTE = 4  # API limit: 4 requests per minute
-TARGET_REQUESTS_PER_MINUTE = 1  # Target: 1 request per minute
-MIN_INTERVAL_SECONDS = 60 // TARGET_REQUESTS_PER_MINUTE  # 60 seconds
+MAX_REQUESTS_PER_MINUTE = 4
+TARGET_REQUESTS_PER_MINUTE = 1
+MIN_INTERVAL_SECONDS = 60 // TARGET_REQUESTS_PER_MINUTE
 
 # Global state for health check, rate limiting, and backups
 last_job_success = False
@@ -84,7 +85,7 @@ def init_db():
         except psycopg2.OperationalError as e:
             attempt += 1
             if attempt < max_attempts:
-                wait_time = min(2 ** attempt, 30)  # Cap wait time at 30 seconds
+                wait_time = min(2 ** attempt, 30)
                 logger.warning(f"Database connection attempt {attempt}/{max_attempts} failed. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
@@ -98,18 +99,15 @@ def check_rate_limits(response):
     global rate_limit_wait, request_count, window_start
     current_time = time.time()
     
-    # Reset counter if minute window has passed
     if current_time - window_start >= 60:
         request_count = 0
         window_start = current_time
     
     request_count += 1
     
-    # Add delay between requests even within limits
     if request_count > 1:
-        time.sleep(15)  # Minimum 15 second gap between requests
+        time.sleep(15)
     
-    # If we're approaching limit, add additional wait time
     if request_count >= MAX_REQUESTS_PER_MINUTE:
         wait_time = 60 - (current_time - window_start)
         if wait_time > 0:
@@ -165,10 +163,11 @@ def prepare_vehicle_status_data(json_data):
     Only includes status records with id:0 and id:1 from each asset's statusList.
     """
     prepared_data = []
+    utc = pytz.UTC
+    seen_keys = set()  # Track unique (asset_id, event_time) pairs
     
     for vehicle in json_data:
         try:
-            # Check for missing or invalid fields
             required_fields = ['id', 'name', 'plate_number', 'vin', 'statusList']
             missing_fields = [field for field in required_fields if field not in vehicle or vehicle[field] is None]
             if missing_fields:
@@ -189,7 +188,6 @@ def prepare_vehicle_status_data(json_data):
             for status in vehicle['statusList']:
                 if status['id'] in [0, 1]:
                     try:
-                        # Validate status fields
                         if not all(key in status for key in ['id', 'position', 'status_text']):
                             logger.error(f"Status missing required fields for vehicle {vehicle['id']}: {status}")
                             continue
@@ -202,8 +200,16 @@ def prepare_vehicle_status_data(json_data):
                             logger.error(f"Coordinates missing required fields for vehicle {vehicle['id']}: {status['position']['coordinates']}")
                             continue
 
-                        # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
-                        event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
+                        naive_event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
+                        event_time = utc.localize(naive_event_time)
+                        
+                        # Check for duplicates
+                        unique_key = (vehicle['id'], event_time)
+                        if unique_key in seen_keys:
+                            logger.warning(f"Duplicate entry for asset_id {vehicle['id']} at {event_time}")
+                            continue
+                        seen_keys.add(unique_key)
+                        
                         prepared_data.append({
                             **base_data,
                             'position_description': status['position']['description'],
@@ -248,7 +254,6 @@ def store_vehicle_status_data(prepared_data):
                 for item in prepared_data
             ]
 
-            # Attempt batch insert
             try:
                 execute_values(
                     cursor,
@@ -277,7 +282,6 @@ def store_vehicle_status_data(prepared_data):
                 conn.rollback()
                 logger.warning(f"Batch insert failed: {e}. Falling back to row-by-row processing")
                 
-                # Row-by-row processing
                 failed_rows = []
                 for i, item in enumerate(prepared_data):
                     try:
@@ -332,7 +336,6 @@ def store_vehicle_status_data(prepared_data):
                 conn.rollback()
                 if "no partition of relation" in str(e):
                     if handle_missing_partition_error(conn, str(e)):
-                        # Retry the batch insert after creating the partition
                         return store_vehicle_status_data(prepared_data)
                 logger.error(f"Database error while storing data: {e}")
                 return False
