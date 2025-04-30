@@ -10,14 +10,15 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from sqlalchemy import create_engine
 import uvicorn
 import asyncio
-from fastapi import FastAPI
+from backup import manage_daily_backups, manage_monthly_backups, manage_annual_backups
 from logging_config import setup_logging
 from log_cleanup import cleanup_old_logs
-from partition_handler import handle_missing_partition_error, create_future_partitions
+from partition_handler import handle_missing_partition_error
 
 # Configure logging
 logger = setup_logging()
@@ -44,6 +45,8 @@ last_job_time = None
 rate_limit_wait = 0
 request_count = 0
 window_start = time.time()
+last_backup_success = False
+last_backup_time = None
 
 # Connection pool
 db_pool = None
@@ -120,6 +123,27 @@ def check_rate_limits(response):
 
     return rate_limit_wait
 
+async def fetch_api_data(session):
+    try:
+        # First request - login
+        check_rate_limits(None)
+        auth_response = await session.post(f"{API_BASE_URL}/login", 
+                                         json={"username": API_USERNAME, 
+                                              "password": API_PASSWORD})
+        
+        # Ensure we wait after first request
+        time.sleep(15)
+        
+        # Second request - fetch data
+        check_rate_limits(auth_response)
+        data_response = await session.get(f"{API_BASE_URL}/data")
+        
+        return data_response.json()
+        
+    except Exception as e:
+        logger.error(f"API request failed: {e}")
+        return None
+
 def get_access_token(session):
     """Authenticate with Winfleet API and retrieve an access token."""
     login_url = f"{API_BASE_URL}/login"
@@ -162,85 +186,34 @@ def prepare_vehicle_status_data(json_data):
     """
     Prepares vehicle status data for database insertion.
     Only includes status records with id:0 and id:1 from each asset's statusList.
-    Deduplicates records with the same (asset_id, event_time), preferring id:0.
-    Handles missing keys gracefully.
     """
     prepared_data = []
-    # Dictionary to track unique (asset_id, event_time) pairs
-    unique_records = {}
-    
-    # Log the full API response for debugging (temporary)
-    logger.debug(f"API response: {json_data}")
     
     for vehicle in json_data:
-        if vehicle.get('id', 0) < 1000:
-            logger.debug(f"Skipping vehicle with id {vehicle.get('id', 'unknown')} (id < 1000)")
+        if vehicle['id'] < 1000:
             continue
             
         base_data = {
-            'asset_id': vehicle.get('id'),
-            'name': vehicle.get('name'),
-            'plate_number': vehicle.get('plate_number'),  # Allow None if missing
-            'vin': vehicle.get('vin')
+            'asset_id': vehicle['id'],
+            'name': vehicle['name'],
+            'plate_number': vehicle['plateNumber'],
+            'vin': vehicle['vin']
         }
         
-        # Log warning if plate_number is missing
-        if base_data['plate_number'] is None:
-            logger.warning(f"Vehicle id={base_data['asset_id']} missing plate_number: {vehicle}")
-        
-        status_list = vehicle.get('statusList', [])
-        if not status_list:
-            logger.debug(f"No statusList for vehicle id={base_data['asset_id']}")
-        
-        for status in status_list:
-            if status.get('id') in [0, 1]:
+        for status in vehicle['statusList']:
+            if status['id'] in [0, 1]:
                 try:
-                    # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
-                    position = status.get('position', {})
-                    tx_date_time = position.get('txDateTime')
-                    if not tx_date_time:
-                        logger.warning(f"Missing txDateTime for vehicle id={base_data['asset_id']}, status id={status.get('id')}")
-                        continue
-                    event_time = datetime.strptime(tx_date_time, '%Y-%m-%dT%H:%M:%S')
-                    
-                    # Create a key for deduplication
-                    record_key = (base_data['asset_id'], event_time)
-                    
-                    # Prepare the record
-                    coordinates = position.get('coordinates', {})
-                    record = {
+                    prepared_data.append({
                         **base_data,
-                        'position_description': position.get('description'),
-                        'event_time': event_time,
-                        'latitude': coordinates.get('latitude'),
-                        'longitude': coordinates.get('longitude'),
-                        'status_text': status.get('status_text'),
-                        'status_id': status.get('id')  # Store status id for preference logic
-                    }
-                    
-                    # Deduplicate: keep id:0 over id:1, or update if same id
-                    if record_key not in unique_records:
-                        unique_records[record_key] = record
-                    else:
-                        existing = unique_records[record_key]
-                        # Prefer id:0 over id:1; if same id, keep the existing
-                        if existing['status_id'] == 1 and status.get('id') == 0:
-                            logger.warning(f"Duplicate (asset_id={base_data['asset_id']}, event_time={event_time}) found. Replacing id:1 with id:0")
-                            unique_records[record_key] = record
-                        else:
-                            logger.warning(f"Duplicate (asset_id={base_data['asset_id']}, event_time={event_time}) found. Keeping existing id:{existing['status_id']}")
-                    
+                        'position_description': status['position']['description'],
+                        'event_time': datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%SZ'),
+                        'latitude': status['position']['coordinates']['latitude'],
+                        'longitude': status['position']['coordinates']['longitude'],
+                        'status_text': status['statusText']
+                    })
                 except (KeyError, ValueError) as e:
-                    logger.error(f"Error preparing status data for vehicle id={base_data['asset_id']}: {e}")
+                    logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
                     continue
-    
-    # Convert unique records to list
-    prepared_data = list(unique_records.values())
-    
-    if prepared_data:
-        logger.info(f"Prepared {len(prepared_data)} unique vehicle status records")
-    else:
-        logger.info("No valid data prepared")
     
     return prepared_data
 
@@ -305,6 +278,29 @@ def store_vehicle_status_data(prepared_data):
         return False
     finally:
         db_pool.putconn(conn)
+
+def store_data(data):
+    conn = None
+    cur = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # ...existing insert code...
+        
+    except psycopg2.Error as e:
+        if "no partition of relation" in str(e):
+            if handle_missing_partition_error(conn, str(e)):
+                # Retry the insert after creating the partition
+                store_data(data)
+                return
+        logging.error(f"Database error while storing data: {str(e)}")
+        raise
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
 
 def fetch_and_store(session):
     global last_job_success, last_job_time, rate_limit_wait
@@ -386,30 +382,15 @@ def maintenance_task():
     finally:
         db_pool.putconn(conn)
 
+from fastapi import FastAPI
 fastapi_app = FastAPI()
 
 @fastapi_app.get("/health")
 async def health_check():
     status = "healthy" if last_job_success else "unhealthy"
     last_run = last_job_time.isoformat() if last_job_time else "never"
-    
-    backup_status = "unhealthy"
-    last_backup = "never"
-    
-    # Check Docker backup volume
-    backup_path = "/app/backups"
-    try:
-        if os.path.exists(backup_path):
-            backup_files = [f for f in os.listdir(backup_path) if f.endswith('.sql')]
-            if backup_files:
-                latest_backup = max(backup_files, key=lambda f: os.path.getmtime(os.path.join(backup_path, f)))
-                backup_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(os.path.join(backup_path, latest_backup)))
-                backup_status = "healthy" if backup_age.days < 2 else "unhealthy"
-                last_backup = datetime.fromtimestamp(os.path.getmtime(os.path.join(backup_path, latest_backup))).isoformat()
-    except Exception as e:
-        logger.error(f"Error checking backup status: {e}")
-        last_backup = "error"
-
+    backup_status = "healthy" if last_backup_success else "unhealthy"
+    last_backup = last_backup_time.isoformat() if last_backup_time else "never"
     return {
         "status": status,
         "last_job_time": last_run,
@@ -449,20 +430,32 @@ def main():
         replace_existing=True
     )
     scheduler.add_job(
+        manage_daily_backups,
+        trigger=IntervalTrigger(days=1),
+        id='daily_backup_job',
+        name='Daily backup management',
+        replace_existing=True
+    )
+    scheduler.add_job(
+        manage_monthly_backups,
+        trigger=CronTrigger(day='last'),
+        id='monthly_backup_job',
+        name='Monthly backup management',
+        replace_existing=True
+    )
+    scheduler.add_job(
+        manage_annual_backups,
+        trigger=CronTrigger(month=12, day=31),
+        id='annual_backup_job',
+        name='Annual backup management',
+        replace_existing=True
+    )
+    scheduler.add_job(
         cleanup_old_logs,
         trigger=IntervalTrigger(days=1),
         id='log_cleanup_job',
         name='Daily log cleanup',
         replace_existing=True
-    )
-    scheduler.add_job(
-        create_future_partitions,
-        trigger=IntervalTrigger(days=7),
-        id='partition_creation_job',
-        name='Create future partitions',
-        replace_existing=True,
-        executor='default',
-        misfire_grace_time=3600
     )
     
     try:
@@ -472,9 +465,6 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         logger.info("Scheduler shut down gracefully")
-    finally:
-        if db_pool:
-            db_pool.closeall()
 
 if __name__ == "__main__":
     main()
