@@ -4,7 +4,6 @@ from dateutil.relativedelta import relativedelta
 import psycopg2
 from psycopg2.extensions import AsIs
 import logging
-from main import db_pool  # Import db_pool from main.py
 
 def create_partition(conn, start_date):
     """Create a monthly partition starting from the given date."""
@@ -52,7 +51,7 @@ def handle_missing_partition_error(conn, error_message):
         conn.rollback()
         return False
 
-def create_future_partitions():
+def create_future_partitions(db_pool):
     """Create partitions for the current and next two months to prevent missing partition errors."""
     conn = db_pool.getconn()
     try:
