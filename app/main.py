@@ -153,6 +153,7 @@ def get_assets(session, token):
         response.raise_for_status()
         check_rate_limits(response)
         assets_data = response.json()
+        logger.debug(f"Raw assets data: {assets_data}")  # Log raw API response
         return assets_data
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to retrieve assets data: {e}")
@@ -166,33 +167,58 @@ def prepare_vehicle_status_data(json_data):
     prepared_data = []
     
     for vehicle in json_data:
-        if vehicle['id'] < 1000:
-            continue
+        try:
+            # Check for missing or invalid fields
+            required_fields = ['id', 'name', 'plate_number', 'vin', 'statusList']
+            missing_fields = [field for field in required_fields if field not in vehicle or vehicle[field] is None]
+            if missing_fields:
+                logger.error(f"Vehicle missing required fields {missing_fields}: {vehicle}")
+                continue
+                
+            base_data = {
+                'asset_id': vehicle['id'],
+                'name': vehicle['name'],
+                'plate_number': vehicle['plate_number'],
+                'vin': vehicle['vin']
+            }
             
-        base_data = {
-            'asset_id': vehicle['id'],
-            'name': vehicle['name'],
-            'plate_number': vehicle['plate_number'],
-            'vin': vehicle['vin']
-        }
+            if not isinstance(vehicle['statusList'], list):
+                logger.error(f"Invalid statusList for vehicle {vehicle['id']}: {vehicle['statusList']}")
+                continue
         
-        for status in vehicle['statusList']:
-            if status['id'] in [0, 1]:
-                try:
-                    # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
-                    event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
-                    prepared_data.append({
-                        **base_data,
-                        'position_description': status['position']['description'],
-                        'event_time': event_time,  # timestamptz-compatible datetime object
-                        'latitude': status['position']['coordinates']['latitude'],
-                        'longitude': status['position']['coordinates']['longitude'],
-                        'status_text': status['status_text']
-                    })
-                except (KeyError, ValueError) as e:
-                    logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
-                    continue
-    
+            for status in vehicle['statusList']:
+                if status['id'] in [0, 1]:
+                    try:
+                        # Validate status fields
+                        if not all(key in status for key in ['id', 'position', 'status_text']):
+                            logger.error(f"Status missing required fields for vehicle {vehicle['id']}: {status}")
+                            continue
+                            
+                        if not all(key in status['position'] for key in ['txDateTime', 'description', 'coordinates']):
+                            logger.error(f"Position missing required fields for vehicle {vehicle['id']}: {status['position']}")
+                            continue
+                            
+                        if not all(key in status['position']['coordinates'] for key in ['latitude', 'longitude']):
+                            logger.error(f"Coordinates missing required fields for vehicle {vehicle['id']}: {status['position']['coordinates']}")
+                            continue
+
+                        
+                        # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
+                        event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
+                        prepared_data.append({
+                            **base_data,
+                            'position_description': status['position']['description'],
+                            'event_time': event_time,  # timestamptz-compatible datetime object
+                            'latitude': status['position']['coordinates']['latitude'],
+                            'longitude': status['position']['coordinates']['longitude'],
+                            'status_text': status['status_text']
+                        })
+                    except (KeyError, ValueError) as e:
+                        logger.error(f"Unexpected error processing vehicle {vehicle.get('id', 'unknown')}: {e}")
+                        logger.error(f"Problematic vehicle data: {vehicle}")
+                        continue
+
+    logger.info(f"Prepared {len(prepared_data)} records from {len(json_data)} vehicles")
     return prepared_data
 
 def store_vehicle_status_data(prepared_data):
@@ -371,6 +397,7 @@ def fetch_and_store(session):
 
         except Exception as e:
             logger.error(f"Unexpected error in fetch_and_store: {e}")
+            logger.error(f"Assets data at time of error: {assets_data}")
             if attempts < max_attempts:
                 wait_time = 2 ** attempts
                 logger.info(f"Waiting {wait_time} seconds before retry")
