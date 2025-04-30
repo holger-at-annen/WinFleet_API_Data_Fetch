@@ -168,7 +168,7 @@ def prepare_vehicle_status_data(json_data):
     
     for vehicle in json_data:
         try:
-            required_fields = ['id', 'name', 'plateNumber', 'vin', 'statusList']  # Changed plate_number to plateNumber
+            required_fields = ['id', 'name', 'statusList']  # Made plateNumber and vin optional
             missing_fields = [field for field in required_fields if field not in vehicle or vehicle[field] is None]
             if missing_fields:
                 logger.error(f"Vehicle missing required fields {missing_fields}: {vehicle}")
@@ -177,8 +177,8 @@ def prepare_vehicle_status_data(json_data):
             base_data = {
                 'asset_id': vehicle['id'],
                 'name': vehicle['name'],
-                'plate_number': vehicle['plateNumber', ''],  # Map plateNumber to plate_number
-                'vin': vehicle['vin']
+                'plate_number': vehicle.get('plateNumber', ''),  # Fixed syntax error, made optional
+                'vin': vehicle.get('vin', '')  # Made optional
             }
             
             if not isinstance(vehicle['statusList'], list):
@@ -188,7 +188,7 @@ def prepare_vehicle_status_data(json_data):
             for status in vehicle['statusList']:
                 if status['id'] in [0, 1]:
                     try:
-                        if not all(key in status for key in ['id', 'position', 'statusText']):  # Changed status_text to statusText
+                        if not all(key in status for key in ['id', 'position', 'statusText']):
                             logger.error(f"Status missing required fields for vehicle {vehicle['id']}: {status}")
                             continue
                             
@@ -200,7 +200,7 @@ def prepare_vehicle_status_data(json_data):
                             logger.error(f"Coordinates missing required fields for vehicle {vehicle['id']}: {status['position']['coordinates']}")
                             continue
 
-                        naive_event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%SZ')  # Added Z for UTC
+                        naive_event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%SZ')
                         event_time = utc.localize(naive_event_time)
                         
                         unique_key = (vehicle['id'], event_time)
@@ -215,7 +215,7 @@ def prepare_vehicle_status_data(json_data):
                             'event_time': event_time,
                             'latitude': status['position']['coordinates']['latitude'],
                             'longitude': status['position']['coordinates']['longitude'],
-                            'status_text': status['statusText']  # Map statusText to status_text
+                            'status_text': status['statusText']
                         })
                     except (KeyError, ValueError) as e:
                         logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
