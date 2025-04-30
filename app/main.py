@@ -162,8 +162,11 @@ def prepare_vehicle_status_data(json_data):
     """
     Prepares vehicle status data for database insertion.
     Only includes status records with id:0 and id:1 from each asset's statusList.
+    Deduplicates records with the same (asset_id, event_time), preferring id:0.
     """
     prepared_data = []
+    # Dictionary to track unique (asset_id, event_time) pairs
+    unique_records = {}
     
     for vehicle in json_data:
         if vehicle['id'] < 1000:
@@ -181,17 +184,43 @@ def prepare_vehicle_status_data(json_data):
                 try:
                     # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
                     event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
-                    prepared_data.append({
+                    # Create a key for deduplication
+                    record_key = (vehicle['id'], event_time)
+                    
+                    # Prepare the record
+                    record = {
                         **base_data,
                         'position_description': status['position']['description'],
-                        'event_time': event_time,  # timestamptz-compatible datetime object
+                        'event_time': event_time,
                         'latitude': status['position']['coordinates']['latitude'],
                         'longitude': status['position']['coordinates']['longitude'],
-                        'status_text': status['status_text']
-                    })
+                        'status_text': status['status_text'],
+                        'status_id': status['id']  # Store status id for preference logic
+                    }
+                    
+                    # Deduplicate: keep id:0 over id:1, or update if same id
+                    if record_key not in unique_records:
+                        unique_records[record_key] = record
+                    else:
+                        existing = unique_records[record_key]
+                        # Prefer id:0 over id:1; if same id, keep the latest (arbitrary)
+                        if existing['status_id'] == 1 and status['id'] == 0:
+                            logger.warning(f"Duplicate (asset_id={vehicle['id']}, event_time={event_time}) found. Replacing id:1 with id:0")
+                            unique_records[record_key] = record
+                        else:
+                            logger.warning(f"Duplicate (asset_id={vehicle['id']}, event_time={event_time}) found. Keeping existing id:{existing['status_id']}")
+                    
                 except (KeyError, ValueError) as e:
                     logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
                     continue
+    
+    # Convert unique records to list
+    prepared_data = list(unique_records.values())
+    
+    if prepared_data:
+        logger.info(f"Prepared {len(prepared_data)} unique vehicle status records")
+    else:
+        logger.info("No valid data prepared")
     
     return prepared_data
 
