@@ -11,7 +11,6 @@ from urllib3.util.retry import Retry
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.executors.pool import ThreadPoolExecutor
 from sqlalchemy import create_engine
 import uvicorn
 import asyncio
@@ -102,7 +101,7 @@ def check_rate_limits(response):
     # Reset counter if minute window has passed
     if current_time - window_start >= 60:
         request_count = 0
-        window_start = current_time
+        window_start = time.time()
     
     request_count += 1
     
@@ -264,6 +263,8 @@ def store_vehicle_status_data(prepared_data):
                         vin = EXCLUDED.vin,
                         position_description = EXCLUDED.position_description,
                         latitude = EXCLUDED.latitude,
+                        longitude = EXServicetion_description = EXCLUDED.position_description,
+                        latitude = EXCLUDED.latitude,
                         longitude = EXCLUDED.longitude,
                         status_text = EXCLUDED.status_text
                     """,
@@ -276,9 +277,7 @@ def store_vehicle_status_data(prepared_data):
                 conn.rollback()  # Ensure clean state before handling partition
                 if "no partition of relation" in str(e):
                     if handle_missing_partition_error(conn, str(e)):
-                        # Return the connection to the pool before retry
-                        db_pool.putconn(conn)
-                        # Get a new connection for the retry
+                        # Retry the insert after creating the partition
                         return store_vehicle_status_data(prepared_data)
                 logger.error(f"Database error while storing data: {e}")
                 return False
@@ -415,10 +414,7 @@ def main():
     jobstores = {
         'default': SQLAlchemyJobStore(url=db_url)
     }
-    executors = {
-        'default': ThreadPoolExecutor(max_workers=10),
-    }
-    scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors)
+    scheduler = BackgroundScheduler(jobstores=jobstores)
     scheduler.add_job(
         fetch_and_store,
         trigger=IntervalTrigger(seconds=max(FETCH_INTERVAL, MIN_INTERVAL_SECONDS)),
@@ -444,7 +440,6 @@ def main():
     scheduler.add_job(
         create_future_partitions,
         trigger=IntervalTrigger(days=7),
-        args=[db_pool],
         id='partition_creation_job',
         name='Create future partitions',
         replace_existing=True,
