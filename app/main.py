@@ -101,7 +101,7 @@ def check_rate_limits(response):
     # Reset counter if minute window has passed
     if current_time - window_start >= 60:
         request_count = 0
-        window_start = time.time()
+        window_start = current_time
     
     request_count += 1
     
@@ -163,39 +163,59 @@ def prepare_vehicle_status_data(json_data):
     Prepares vehicle status data for database insertion.
     Only includes status records with id:0 and id:1 from each asset's statusList.
     Deduplicates records with the same (asset_id, event_time), preferring id:0.
+    Handles missing keys gracefully.
     """
     prepared_data = []
     # Dictionary to track unique (asset_id, event_time) pairs
     unique_records = {}
     
+    # Log the full API response for debugging (temporary)
+    logger.debug(f"API response: {json_data}")
+    
     for vehicle in json_data:
-        if vehicle['id'] < 1000:
+        if vehicle.get('id', 0) < 1000:
+            logger.debug(f"Skipping vehicle with id {vehicle.get('id', 'unknown')} (id < 1000)")
             continue
             
         base_data = {
-            'asset_id': vehicle['id'],
-            'name': vehicle['name'],
-            'plate_number': vehicle['plate_number'],
-            'vin': vehicle['vin']
+            'asset_id': vehicle.get('id'),
+            'name': vehicle.get('name'),
+            'plate_number': vehicle.get('plate_number'),  # Allow None if missing
+            'vin': vehicle.get('vin')
         }
         
-        for status in vehicle['statusList']:
-            if status['id'] in [0, 1]:
+        # Log warning if plate_number is missing
+        if base_data['plate_number'] is None:
+            logger.warning(f"Vehicle id={base_data['asset_id']} missing plate_number: {vehicle}")
+        
+        status_list = vehicle.get('statusList', [])
+        if not status_list:
+            logger.debug(f"No statusList for vehicle id={base_data['asset_id']}")
+        
+        for status in status_list:
+            if status.get('id') in [0, 1]:
                 try:
                     # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
-                    event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
+                    position = status.get('position', {})
+                    tx_date_time = position.get('txDateTime')
+                    if not tx_date_time:
+                        logger.warning(f"Missing txDateTime for vehicle id={base_data['asset_id']}, status id={status.get('id')}")
+                        continue
+                    event_time = datetime.strptime(tx_date_time, '%Y-%m-%dT%H:%M:%S')
+                    
                     # Create a key for deduplication
-                    record_key = (vehicle['id'], event_time)
+                    record_key = (base_data['asset_id'], event_time)
                     
                     # Prepare the record
+                    coordinates = position.get('coordinates', {})
                     record = {
                         **base_data,
-                        'position_description': status['position']['description'],
+                        'position_description': position.get('description'),
                         'event_time': event_time,
-                        'latitude': status['position']['coordinates']['latitude'],
-                        'longitude': status['position']['coordinates']['longitude'],
-                        'status_text': status['status_text'],
-                        'status_id': status['id']  # Store status id for preference logic
+                        'latitude': coordinates.get('latitude'),
+                        'longitude': coordinates.get('longitude'),
+                        'status_text': status.get('status_text'),
+                        'status_id': status.get('id')  # Store status id for preference logic
                     }
                     
                     # Deduplicate: keep id:0 over id:1, or update if same id
@@ -204,14 +224,14 @@ def prepare_vehicle_status_data(json_data):
                     else:
                         existing = unique_records[record_key]
                         # Prefer id:0 over id:1; if same id, keep the existing
-                        if existing['status_id'] == 1 and status['id'] == 0:
-                            logger.warning(f"Duplicate (asset_id={vehicle['id']}, event_time={event_time}) found. Replacing id:1 with id:0")
+                        if existing['status_id'] == 1 and status.get('id') == 0:
+                            logger.warning(f"Duplicate (asset_id={base_data['asset_id']}, event_time={event_time}) found. Replacing id:1 with id:0")
                             unique_records[record_key] = record
                         else:
-                            logger.warning(f"Duplicate (asset_id={vehicle['id']}, event_time={event_time}) found. Keeping existing id:{existing['status_id']}")
+                            logger.warning(f"Duplicate (asset_id={base_data['asset_id']}, event_time={event_time}) found. Keeping existing id:{existing['status_id']}")
                     
                 except (KeyError, ValueError) as e:
-                    logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
+                    logger.error(f"Error preparing status data for vehicle id={base_data['asset_id']}: {e}")
                     continue
     
     # Convert unique records to list
@@ -262,8 +282,6 @@ def store_vehicle_status_data(prepared_data):
                         plate_number = EXCLUDED.plate_number,
                         vin = EXCLUDED.vin,
                         position_description = EXCLUDED.position_description,
-                        latitude = EXCLUDED.latitude,
-                        longitude = EXServicetion_description = EXCLUDED.position_description,
                         latitude = EXCLUDED.latitude,
                         longitude = EXCLUDED.longitude,
                         status_text = EXCLUDED.status_text
