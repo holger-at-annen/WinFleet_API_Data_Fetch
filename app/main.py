@@ -11,6 +11,7 @@ from urllib3.util.retry import Retry
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
 from sqlalchemy import create_engine
 import uvicorn
 import asyncio
@@ -203,7 +204,7 @@ def prepare_vehicle_status_data(json_data):
                         unique_records[record_key] = record
                     else:
                         existing = unique_records[record_key]
-                        # Prefer id:0 over id:1; if same id, keep the latest (arbitrary)
+                        # Prefer id:0 over id:1; if same id, keep the existing
                         if existing['status_id'] == 1 and status['id'] == 0:
                             logger.warning(f"Duplicate (asset_id={vehicle['id']}, event_time={event_time}) found. Replacing id:1 with id:0")
                             unique_records[record_key] = record
@@ -275,7 +276,9 @@ def store_vehicle_status_data(prepared_data):
                 conn.rollback()  # Ensure clean state before handling partition
                 if "no partition of relation" in str(e):
                     if handle_missing_partition_error(conn, str(e)):
-                        # Retry the insert after creating the partition
+                        # Return the connection to the pool before retry
+                        db_pool.putconn(conn)
+                        # Get a new connection for the retry
                         return store_vehicle_status_data(prepared_data)
                 logger.error(f"Database error while storing data: {e}")
                 return False
@@ -412,7 +415,10 @@ def main():
     jobstores = {
         'default': SQLAlchemyJobStore(url=db_url)
     }
-    scheduler = BackgroundScheduler(jobstores=jobstores)
+    executors = {
+        'default': ThreadPoolExecutor(max_workers=10),
+    }
+    scheduler = BackgroundScheduler(jobstores=jobstores, executors=executors)
     scheduler.add_job(
         fetch_and_store,
         trigger=IntervalTrigger(seconds=max(FETCH_INTERVAL, MIN_INTERVAL_SECONDS)),
@@ -438,6 +444,7 @@ def main():
     scheduler.add_job(
         create_future_partitions,
         trigger=IntervalTrigger(days=7),
+        args=[db_pool],
         id='partition_creation_job',
         name='Create future partitions',
         replace_existing=True,
