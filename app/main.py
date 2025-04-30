@@ -164,11 +164,11 @@ def prepare_vehicle_status_data(json_data):
     """
     prepared_data = []
     utc = pytz.UTC
-    seen_keys = set()  # Track unique (asset_id, event_time) pairs
+    seen_keys = set()
     
     for vehicle in json_data:
         try:
-            required_fields = ['id', 'name', 'plate_number', 'vin', 'statusList']
+            required_fields = ['id', 'name', 'plateNumber', 'vin', 'statusList']  # Changed plate_number to plateNumber
             missing_fields = [field for field in required_fields if field not in vehicle or vehicle[field] is None]
             if missing_fields:
                 logger.error(f"Vehicle missing required fields {missing_fields}: {vehicle}")
@@ -177,7 +177,7 @@ def prepare_vehicle_status_data(json_data):
             base_data = {
                 'asset_id': vehicle['id'],
                 'name': vehicle['name'],
-                'plate_number': vehicle['plate_number'],
+                'plate_number': vehicle['plateNumber', ''],  # Map plateNumber to plate_number
                 'vin': vehicle['vin']
             }
             
@@ -188,7 +188,7 @@ def prepare_vehicle_status_data(json_data):
             for status in vehicle['statusList']:
                 if status['id'] in [0, 1]:
                     try:
-                        if not all(key in status for key in ['id', 'position', 'status_text']):
+                        if not all(key in status for key in ['id', 'position', 'statusText']):  # Changed status_text to statusText
                             logger.error(f"Status missing required fields for vehicle {vehicle['id']}: {status}")
                             continue
                             
@@ -200,10 +200,9 @@ def prepare_vehicle_status_data(json_data):
                             logger.error(f"Coordinates missing required fields for vehicle {vehicle['id']}: {status['position']['coordinates']}")
                             continue
 
-                        naive_event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
+                        naive_event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%SZ')  # Added Z for UTC
                         event_time = utc.localize(naive_event_time)
                         
-                        # Check for duplicates
                         unique_key = (vehicle['id'], event_time)
                         if unique_key in seen_keys:
                             logger.warning(f"Duplicate entry for asset_id {vehicle['id']} at {event_time}")
@@ -216,7 +215,7 @@ def prepare_vehicle_status_data(json_data):
                             'event_time': event_time,
                             'latitude': status['position']['coordinates']['latitude'],
                             'longitude': status['position']['coordinates']['longitude'],
-                            'status_text': status['status_text']
+                            'status_text': status['statusText']  # Map statusText to status_text
                         })
                     except (KeyError, ValueError) as e:
                         logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
