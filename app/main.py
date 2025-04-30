@@ -153,7 +153,7 @@ def get_assets(session, token):
         response.raise_for_status()
         check_rate_limits(response)
         assets_data = response.json()
-        logger.debug(f"Raw assets data: {assets_data}")  # Log raw API response
+        logger.debug(f"Raw assets data: {assets_data}")
         return assets_data
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to retrieve assets data: {e}")
@@ -202,21 +202,24 @@ def prepare_vehicle_status_data(json_data):
                             logger.error(f"Coordinates missing required fields for vehicle {vehicle['id']}: {status['position']['coordinates']}")
                             continue
 
-                        
                         # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
                         event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
                         prepared_data.append({
                             **base_data,
                             'position_description': status['position']['description'],
-                            'event_time': event_time,  # timestamptz-compatible datetime object
+                            'event_time': event_time,
                             'latitude': status['position']['coordinates']['latitude'],
                             'longitude': status['position']['coordinates']['longitude'],
                             'status_text': status['status_text']
                         })
                     except (KeyError, ValueError) as e:
-                        logger.error(f"Unexpected error processing vehicle {vehicle.get('id', 'unknown')}: {e}")
-                        logger.error(f"Problematic vehicle data: {vehicle}")
+                        logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
+                        logger.error(f"Problematic status data: {status}")
                         continue
+        except Exception as e:
+            logger.error(f"Unexpected error processing vehicle {vehicle.get('id', 'unknown')}: {e}")
+            logger.error(f"Problematic vehicle data: {vehicle}")
+            continue
 
     logger.info(f"Prepared {len(prepared_data)} records from {len(json_data)} vehicles")
     return prepared_data
@@ -350,13 +353,12 @@ def fetch_and_store(session):
     attempts = 0
     max_attempts = 3
     success = False
-    assets_data = None  # Store the fetched data
+    assets_data = None
     
     while attempts < max_attempts and not success:
         attempts += 1
         logger.info(f"Attempt {attempts} of {max_attempts}")
         try:
-            # Only fetch data if we don't have it yet
             if assets_data is None:
                 token = get_access_token(session)
                 if not token:
@@ -376,7 +378,6 @@ def fetch_and_store(session):
                         time.sleep(wait_time)
                     continue
 
-            # Only prepare and store if we have data
             if assets_data:
                 prepared_data = prepare_vehicle_status_data(assets_data)
                 if not prepared_data:
@@ -431,7 +432,6 @@ async def health_check():
     backup_status = "unhealthy"
     last_backup = "never"
     
-    # Check Docker backup volume
     backup_path = "/app/backups"
     try:
         if os.path.exists(backup_path):
