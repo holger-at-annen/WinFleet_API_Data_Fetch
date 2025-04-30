@@ -43,3 +43,18 @@ def handle_missing_partition_error(conn, error_message):
             logging.error(f"Could not parse date from error message: {date_str}")
             return False
     return False
+
+def create_future_partitions():
+    """Create partitions for the current and next two months to prevent missing partition errors."""
+    conn = db_pool.getconn()
+    try:
+        current_date = datetime.now()
+        for i in range(3):  # Current month + next 2 months
+            create_partition(conn, current_date + relativedelta(months=i))
+        logging.info("Future partitions created successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Error creating future partitions: {str(e)}")
+        return False
+    finally:
+        db_pool.putconn(conn)
