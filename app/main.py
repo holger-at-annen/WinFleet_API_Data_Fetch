@@ -10,15 +10,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from sqlalchemy import create_engine
 import uvicorn
 import asyncio
-from backup import manage_daily_backups, manage_monthly_backups, manage_annual_backups
+from fastapi import FastAPI
 from logging_config import setup_logging
 from log_cleanup import cleanup_old_logs
-from partition_handler import handle_missing_partition_error
+from partition_handler import handle_missing_partition_error, create_future_partitions
 
 # Configure logging
 logger = setup_logging()
@@ -45,8 +44,6 @@ last_job_time = None
 rate_limit_wait = 0
 request_count = 0
 window_start = time.time()
-last_backup_success = False
-last_backup_time = None
 
 # Connection pool
 db_pool = None
@@ -123,27 +120,6 @@ def check_rate_limits(response):
 
     return rate_limit_wait
 
-async def fetch_api_data(session):
-    try:
-        # First request - login
-        check_rate_limits(None)
-        auth_response = await session.post(f"{API_BASE_URL}/login", 
-                                         json={"username": API_USERNAME, 
-                                              "password": API_PASSWORD})
-        
-        # Ensure we wait after first request
-        time.sleep(15)
-        
-        # Second request - fetch data
-        check_rate_limits(auth_response)
-        data_response = await session.get(f"{API_BASE_URL}/data")
-        
-        return data_response.json()
-        
-    except Exception as e:
-        logger.error(f"API request failed: {e}")
-        return None
-
 def get_access_token(session):
     """Authenticate with Winfleet API and retrieve an access token."""
     login_url = f"{API_BASE_URL}/login"
@@ -196,20 +172,22 @@ def prepare_vehicle_status_data(json_data):
         base_data = {
             'asset_id': vehicle['id'],
             'name': vehicle['name'],
-            'plate_number': vehicle['plateNumber'],
+            'plate_number': vehicle['plate_number'],
             'vin': vehicle['vin']
         }
         
         for status in vehicle['statusList']:
             if status['id'] in [0, 1]:
                 try:
+                    # Parse the incoming date format (e.g., 2025-04-28T05:59:04) for timestamptz
+                    event_time = datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%S')
                     prepared_data.append({
                         **base_data,
                         'position_description': status['position']['description'],
-                        'event_time': datetime.strptime(status['position']['txDateTime'], '%Y-%m-%dT%H:%M:%SZ'),
+                        'event_time': event_time,  # timestamptz-compatible datetime object
                         'latitude': status['position']['coordinates']['latitude'],
                         'longitude': status['position']['coordinates']['longitude'],
-                        'status_text': status['statusText']
+                        'status_text': status['status_text']
                     })
                 except (KeyError, ValueError) as e:
                     logger.error(f"Error preparing status data for vehicle {vehicle['id']}: {e}")
@@ -240,6 +218,8 @@ def store_vehicle_status_data(prepared_data):
                 )
                 for item in prepared_data
             ]
+
+            # Attempt batch insert
             try:
                 execute_values(
                     cursor,
@@ -262,13 +242,68 @@ def store_vehicle_status_data(prepared_data):
                     values
                 )
                 conn.commit()
-                logger.info(f"Inserted/Updated {len(values)} vehicle status records")
+                logger.info(f"Inserted/Updated {len(values)} vehicle status records in batch")
                 return True
             except psycopg2.Error as e:
-                conn.rollback()  # Ensure clean state before handling partition
+                conn.rollback()
+                logger.warning(f"Batch insert failed: {e}. Falling back to row-by-row processing")
+                
+                # Row-by-row processing
+                failed_rows = []
+                for i, item in enumerate(prepared_data):
+                    try:
+                        cursor.execute(
+                            """
+                            INSERT INTO posts (
+                                asset_id, name, plate_number, vin, position_description,
+                                event_time, latitude, longitude, status_text
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT ON CONSTRAINT posts_pkey DO UPDATE
+                            SET
+                                name = EXCLUDED.name,
+                                plate_number = EXCLUDED.plate_number,
+                                vin = EXCLUDED.vin,
+                                position_description = EXCLUDED.position_description,
+                                latitude = EXCLUDED.latitude,
+                                longitude = EXCLUDED.longitude,
+                                status_text = EXCLUDED.status_text
+                            """,
+                            (
+                                item['asset_id'],
+                                item['name'],
+                                item['plate_number'],
+                                item['vin'],
+                                item['position_description'],
+                                item['event_time'],
+                                item['latitude'],
+                                item['longitude'],
+                                item['status_text']
+                            )
+                        )
+                        conn.commit()
+                    except psycopg2.Error as row_e:
+                        conn.rollback()
+                        logger.error(f"Error storing row {i+1} with asset_id {item['asset_id']}: {row_e}")
+                        logger.error(f"Problematic row data: {item}")
+                        failed_rows.append(item)
+                    except Exception as row_e:
+                        conn.rollback()
+                        logger.error(f"Unexpected error storing row {i+1} with asset_id {item['asset_id']}: {row_e}")
+                        logger.error(f"Problematic row data: {item}")
+                        failed_rows.append(item)
+
+                if failed_rows:
+                    logger.warning(f"Failed to store {len(failed_rows)} rows out of {len(prepared_data)}")
+                    return False
+                logger.info(f"Successfully stored {len(prepared_data)} rows individually")
+                return True
+
+            except psycopg2.Error as e:
+                conn.rollback()
                 if "no partition of relation" in str(e):
                     if handle_missing_partition_error(conn, str(e)):
-                        # Retry the insert after creating the partition
+                        # Retry the batch insert after creating the partition
                         return store_vehicle_status_data(prepared_data)
                 logger.error(f"Database error while storing data: {e}")
                 return False
@@ -278,29 +313,6 @@ def store_vehicle_status_data(prepared_data):
         return False
     finally:
         db_pool.putconn(conn)
-
-def store_data(data):
-    conn = None
-    cur = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # ...existing insert code...
-        
-    except psycopg2.Error as e:
-        if "no partition of relation" in str(e):
-            if handle_missing_partition_error(conn, str(e)):
-                # Retry the insert after creating the partition
-                store_data(data)
-                return
-        logging.error(f"Database error while storing data: {str(e)}")
-        raise
-    finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
 
 def fetch_and_store(session):
     global last_job_success, last_job_time, rate_limit_wait
@@ -382,15 +394,30 @@ def maintenance_task():
     finally:
         db_pool.putconn(conn)
 
-from fastapi import FastAPI
 fastapi_app = FastAPI()
 
 @fastapi_app.get("/health")
 async def health_check():
     status = "healthy" if last_job_success else "unhealthy"
     last_run = last_job_time.isoformat() if last_job_time else "never"
-    backup_status = "healthy" if last_backup_success else "unhealthy"
-    last_backup = last_backup_time.isoformat() if last_backup_time else "never"
+    
+    backup_status = "unhealthy"
+    last_backup = "never"
+    
+    # Check Docker backup volume
+    backup_path = "/app/backups"
+    try:
+        if os.path.exists(backup_path):
+            backup_files = [f for f in os.listdir(backup_path) if f.endswith('.sql')]
+            if backup_files:
+                latest_backup = max(backup_files, key=lambda f: os.path.getmtime(os.path.join(backup_path, f)))
+                backup_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(os.path.join(backup_path, latest_backup)))
+                backup_status = "healthy" if backup_age.days < 2 else "unhealthy"
+                last_backup = datetime.fromtimestamp(os.path.getmtime(os.path.join(backup_path, latest_backup))).isoformat()
+    except Exception as e:
+        logger.error(f"Error checking backup status: {e}")
+        last_backup = "error"
+
     return {
         "status": status,
         "last_job_time": last_run,
@@ -430,32 +457,20 @@ def main():
         replace_existing=True
     )
     scheduler.add_job(
-        manage_daily_backups,
-        trigger=IntervalTrigger(days=1),
-        id='daily_backup_job',
-        name='Daily backup management',
-        replace_existing=True
-    )
-    scheduler.add_job(
-        manage_monthly_backups,
-        trigger=CronTrigger(day='last'),
-        id='monthly_backup_job',
-        name='Monthly backup management',
-        replace_existing=True
-    )
-    scheduler.add_job(
-        manage_annual_backups,
-        trigger=CronTrigger(month=12, day=31),
-        id='annual_backup_job',
-        name='Annual backup management',
-        replace_existing=True
-    )
-    scheduler.add_job(
         cleanup_old_logs,
         trigger=IntervalTrigger(days=1),
         id='log_cleanup_job',
         name='Daily log cleanup',
         replace_existing=True
+    )
+    scheduler.add_job(
+        create_future_partitions,
+        trigger=IntervalTrigger(days=7),
+        id='partition_creation_job',
+        name='Create future partitions',
+        replace_existing=True,
+        executor='default',
+        misfire_grace_time=3600
     )
     
     try:
@@ -465,6 +480,9 @@ def main():
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         logger.info("Scheduler shut down gracefully")
+    finally:
+        if db_pool:
+            db_pool.closeall()
 
 if __name__ == "__main__":
     main()
