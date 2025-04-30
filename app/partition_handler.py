@@ -46,7 +46,7 @@ def handle_missing_partition_error(conn, error_message):
 
 def create_future_partitions():
     """Create partitions for the current and next two months to prevent missing partition errors."""
-    conn = db_pool.getconn()
+    conn = conn.cursor()
     try:
         current_date = datetime.now()
         for i in range(3):  # Current month + next 2 months
@@ -57,4 +57,4 @@ def create_future_partitions():
         logging.error(f"Error creating future partitions: {str(e)}")
         return False
     finally:
-        db_pool.putconn(conn)
+        cur.close()
