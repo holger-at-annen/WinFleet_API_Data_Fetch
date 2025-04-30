@@ -51,8 +51,9 @@ def handle_missing_partition_error(conn, error_message):
         conn.rollback()
         return False
 
-def create_future_partitions(db_pool):
+def create_future_partitions():
     """Create partitions for the current and next two months to prevent missing partition errors."""
+    from main import db_pool  # Lazy import to avoid circular import
     conn = db_pool.getconn()
     try:
         current_date = datetime.now()
